@@ -24,8 +24,8 @@ import org.elasticsearch.action.count.CountRequest;
 import org.elasticsearch.action.count.CountResponse;
 import org.elasticsearch.action.support.broadcast.BroadcastOperationThreading;
 import org.elasticsearch.client.Client;
+import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.inject.Inject;
-import org.elasticsearch.common.io.BytesStream;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.rest.*;
@@ -70,15 +70,15 @@ public class RestCountAction extends BaseRestHandler {
             }
             countRequest.operationThreading(operationThreading);
             if (request.hasContent()) {
-                countRequest.query(request.contentByteArray(), request.contentByteArrayOffset(), request.contentLength(), true);
+                countRequest.query(request.content(), request.contentUnsafe());
             } else {
                 String source = request.param("source");
                 if (source != null) {
                     countRequest.query(source);
                 } else {
-                    BytesStream querySource = RestActions.parseQuerySource(request);
+                    BytesReference querySource = RestActions.parseQuerySource(request);
                     if (querySource != null) {
-                        countRequest.query(querySource.underlyingBytes(), 0, querySource.size(), false);
+                        countRequest.query(querySource, false);
                     }
                 }
             }

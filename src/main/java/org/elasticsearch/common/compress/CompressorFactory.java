@@ -20,14 +20,26 @@
 package org.elasticsearch.common.compress;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Lists;
 import org.apache.lucene.store.IndexInput;
-import org.elasticsearch.common.BytesHolder;
 import org.elasticsearch.common.Nullable;
+import org.elasticsearch.common.bytes.BytesArray;
+import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.collect.MapBuilder;
 import org.elasticsearch.common.compress.lzf.LZFCompressor;
+import org.elasticsearch.common.compress.snappy.UnavailableSnappyCompressor;
+import org.elasticsearch.common.compress.snappy.xerial.XerialSnappy;
+import org.elasticsearch.common.compress.snappy.xerial.XerialSnappyCompressor;
+import org.elasticsearch.common.io.Streams;
+import org.elasticsearch.common.io.stream.CachedStreamOutput;
+import org.elasticsearch.common.io.stream.StreamInput;
+import org.elasticsearch.common.logging.Loggers;
+import org.elasticsearch.common.settings.Settings;
 import org.jboss.netty.buffer.ChannelBuffer;
 
 import java.io.IOException;
+import java.util.List;
+import java.util.Locale;
 
 /**
  */
@@ -37,20 +49,61 @@ public class CompressorFactory {
 
     private static final Compressor[] compressors;
     private static final ImmutableMap<String, Compressor> compressorsByType;
+    private static Compressor defaultCompressor;
 
     static {
-        compressors = new Compressor[1];
-        compressors[0] = LZF;
+        List<Compressor> compressorsX = Lists.newArrayList();
+        compressorsX.add(LZF);
+        boolean addedSnappy = false;
+        if (XerialSnappy.available) {
+            compressorsX.add(new XerialSnappyCompressor());
+            addedSnappy = true;
+        } else {
+            Loggers.getLogger(CompressorFactory.class).debug("failed to load xerial snappy-java", XerialSnappy.failure);
+        }
+        if (!addedSnappy) {
+            compressorsX.add(new UnavailableSnappyCompressor());
+        }
+
+        compressors = compressorsX.toArray(new Compressor[compressorsX.size()]);
 
         MapBuilder<String, Compressor> compressorsByTypeX = MapBuilder.newMapBuilder();
         for (Compressor compressor : compressors) {
             compressorsByTypeX.put(compressor.type(), compressor);
         }
         compressorsByType = compressorsByTypeX.immutableMap();
+
+        defaultCompressor = LZF;
+    }
+
+    public static synchronized void configure(Settings settings) {
+        for (Compressor compressor : compressors) {
+            compressor.configure(settings);
+        }
+        String defaultType = settings.get("compress.default.type", "lzf").toLowerCase(Locale.ENGLISH);
+        boolean found = false;
+        for (Compressor compressor : compressors) {
+            if (defaultType.equalsIgnoreCase(compressor.type())) {
+                defaultCompressor = compressor;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            Loggers.getLogger(CompressorFactory.class).warn("failed to find default type [{}]", defaultType);
+        }
+    }
+
+    public static synchronized void setDefaultCompressor(Compressor defaultCompressor) {
+        CompressorFactory.defaultCompressor = defaultCompressor;
     }
 
     public static Compressor defaultCompressor() {
-        return LZF;
+        return defaultCompressor;
+    }
+
+    public static boolean isCompressed(BytesReference bytes) {
+        return compressor(bytes) != null;
     }
 
     public static boolean isCompressed(byte[] data) {
@@ -61,9 +114,18 @@ public class CompressorFactory {
         return compressor(data, offset, length) != null;
     }
 
+    public static boolean isCompressed(IndexInput in) throws IOException {
+        return compressor(in) != null;
+    }
+
     @Nullable
-    public static Compressor compressor(BytesHolder bytes) {
-        return compressor(bytes.bytes(), bytes.offset(), bytes.length());
+    public static Compressor compressor(BytesReference bytes) {
+        for (Compressor compressor : compressors) {
+            if (compressor.isCompressed(bytes)) {
+                return compressor;
+            }
+        }
+        return null;
     }
 
     @Nullable
@@ -108,10 +170,21 @@ public class CompressorFactory {
     /**
      * Uncompress the provided data, data can be detected as compressed using {@link #isCompressed(byte[], int, int)}.
      */
-    public static BytesHolder uncompressIfNeeded(BytesHolder bytes) throws IOException {
+    public static BytesReference uncompressIfNeeded(BytesReference bytes) throws IOException {
         Compressor compressor = compressor(bytes);
         if (compressor != null) {
-            return new BytesHolder(compressor.uncompress(bytes.bytes(), bytes.offset(), bytes.length()));
+            if (bytes.hasArray()) {
+                return new BytesArray(compressor.uncompress(bytes.array(), bytes.arrayOffset(), bytes.length()));
+            }
+            StreamInput compressed = compressor.streamInput(bytes.streamInput());
+            CachedStreamOutput.Entry entry = CachedStreamOutput.popEntry();
+            try {
+                Streams.copy(compressed, entry.bytes());
+                compressed.close();
+                return new BytesArray(entry.bytes().bytes().toBytes());
+            } finally {
+                CachedStreamOutput.pushEntry(entry);
+            }
         }
         return bytes;
     }

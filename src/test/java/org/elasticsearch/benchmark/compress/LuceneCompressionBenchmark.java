@@ -23,13 +23,12 @@ import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
-import org.apache.lucene.store.IndexInput;
-import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.NIOFSDirectory;
-import org.elasticsearch.common.compress.CompressedIndexInput;
-import org.elasticsearch.common.compress.Compressor;
-import org.elasticsearch.common.compress.CompressorFactory;
+import org.elasticsearch.common.compress.CompressedDirectory;
+import org.elasticsearch.common.compress.lzf.LZFCompressor;
+import org.elasticsearch.common.compress.snappy.xerial.XerialSnappyCompressor;
 import org.elasticsearch.common.io.FileSystemUtils;
 import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.common.unit.ByteSizeValue;
@@ -37,7 +36,6 @@ import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
 
 import java.io.File;
-import java.io.IOException;
 
 /**
  */
@@ -45,8 +43,7 @@ public class LuceneCompressionBenchmark {
 
     public static void main(String[] args) throws Exception {
         final long MAX_SIZE = ByteSizeValue.parseBytesSizeValue("50mb").bytes();
-
-        final Compressor compressor = CompressorFactory.defaultCompressor();
+        final boolean WITH_TV = true;
 
         File testFile = new File("target/test/compress/lucene");
         FileSystemUtils.deleteRecursively(testFile);
@@ -55,49 +52,11 @@ public class LuceneCompressionBenchmark {
         FSDirectory uncompressedDir = new NIOFSDirectory(new File(testFile, "uncompressed"));
         IndexWriter uncompressedWriter = new IndexWriter(uncompressedDir, new IndexWriterConfig(Lucene.VERSION, Lucene.STANDARD_ANALYZER));
 
-        FSDirectory compressedDir = new NIOFSDirectory(new File(testFile, "compressed")) {
-            @Override
-            public IndexOutput createOutput(String name) throws IOException {
-                if (name.endsWith(".fdt")) {
-                    return compressor.indexOutput(super.createOutput(name));
-                }
-                return super.createOutput(name);
-            }
+        Directory compressedLzfDir = new CompressedDirectory(new NIOFSDirectory(new File(testFile, "compressed_lzf")), new LZFCompressor(), false, "fdt", "tvf");
+        IndexWriter compressedLzfWriter = new IndexWriter(compressedLzfDir, new IndexWriterConfig(Lucene.VERSION, Lucene.STANDARD_ANALYZER));
 
-            @Override
-            public IndexInput openInput(String name) throws IOException {
-                if (name.endsWith(".fdt")) {
-                    IndexInput in = super.openInput(name);
-                    Compressor compressor1 = CompressorFactory.compressor(in);
-                    if (compressor1 != null) {
-                        return compressor1.indexInput(in);
-                    } else {
-                        return in;
-                    }
-                }
-                return super.openInput(name);
-            }
-
-            @Override
-            public IndexInput openInput(String name, int bufferSize) throws IOException {
-                if (name.endsWith(".fdt")) {
-                    IndexInput in = super.openInput(name, bufferSize);
-                    // in case the override called openInput(String)
-                    if (in instanceof CompressedIndexInput) {
-                        return in;
-                    }
-                    Compressor compressor1 = CompressorFactory.compressor(in);
-                    if (compressor1 != null) {
-                        return compressor1.indexInput(in);
-                    } else {
-                        return in;
-                    }
-                }
-                return super.openInput(name, bufferSize);
-            }
-        };
-
-        IndexWriter compressedWriter = new IndexWriter(compressedDir, new IndexWriterConfig(Lucene.VERSION, Lucene.STANDARD_ANALYZER));
+        Directory compressedSnappyDir = new CompressedDirectory(new NIOFSDirectory(new File(testFile, "compressed_snappy")), new XerialSnappyCompressor(), false, "fdt", "tvf");
+        IndexWriter compressedSnappyWriter = new IndexWriter(compressedSnappyDir, new IndexWriterConfig(Lucene.VERSION, Lucene.STANDARD_ANALYZER));
 
         System.out.println("feeding data...");
         TestData testData = new TestData();
@@ -107,21 +66,30 @@ public class LuceneCompressionBenchmark {
             testData.current(builder);
             builder.close();
             Document doc = new Document();
-            doc.add(new Field("_source", builder.underlyingBytes(), 0, builder.underlyingBytesLength()));
+            doc.add(new Field("_source", builder.bytes().array(), builder.bytes().arrayOffset(), builder.bytes().length()));
+            if (WITH_TV) {
+                Field field = new Field("text", builder.string(), Field.Store.NO, Field.Index.ANALYZED, Field.TermVector.WITH_POSITIONS_OFFSETS);
+                doc.add(field);
+            }
             uncompressedWriter.addDocument(doc);
-            compressedWriter.addDocument(doc);
+            compressedLzfWriter.addDocument(doc);
+            compressedSnappyWriter.addDocument(doc);
         }
         System.out.println("optimizing...");
         uncompressedWriter.forceMerge(1);
-        compressedWriter.forceMerge(1);
+        compressedLzfWriter.forceMerge(1);
+        compressedSnappyWriter.forceMerge(1);
         uncompressedWriter.waitForMerges();
-        compressedWriter.waitForMerges();
+        compressedLzfWriter.waitForMerges();
+        compressedSnappyWriter.waitForMerges();
 
         System.out.println("done");
-        uncompressedDir.close();
-        compressedWriter.close();
+        uncompressedWriter.close();
+        compressedLzfWriter.close();
+        compressedSnappyWriter.close();
 
-        compressedDir.close();
+        compressedLzfDir.close();
+        compressedSnappyDir.close();
         uncompressedDir.close();
     }
 

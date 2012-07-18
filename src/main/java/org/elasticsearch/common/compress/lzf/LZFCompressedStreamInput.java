@@ -26,11 +26,10 @@ import org.elasticsearch.common.compress.CompressedStreamInput;
 import org.elasticsearch.common.io.stream.StreamInput;
 
 import java.io.IOException;
-import java.io.InputStream;
 
 /**
  */
-public class LZFCompressedStreamInput extends CompressedStreamInput {
+public class LZFCompressedStreamInput extends CompressedStreamInput<LZFCompressorContext> {
 
     private final BufferRecycler recycler;
 
@@ -40,7 +39,7 @@ public class LZFCompressedStreamInput extends CompressedStreamInput {
     private byte[] inputBuffer;
 
     public LZFCompressedStreamInput(StreamInput in, ChunkDecoder decoder) throws IOException {
-        super(in);
+        super(in, LZFCompressorContext.INSTANCE);
         this.recycler = BufferRecycler.instance();
         this.decoder = decoder;
 
@@ -54,7 +53,7 @@ public class LZFCompressedStreamInput extends CompressedStreamInput {
     }
 
     @Override
-    public int uncompress(InputStream in, byte[] out) throws IOException {
+    public int uncompress(StreamInput in, byte[] out) throws IOException {
         return decoder.decodeChunk(in, inputBuffer, out);
     }
 

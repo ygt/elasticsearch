@@ -17,29 +17,29 @@
  * under the License.
  */
 
-package org.elasticsearch.common.thread;
+package org.elasticsearch.common.util.concurrent;
 
-import org.elasticsearch.common.logging.ESLogger;
+import org.elasticsearch.ElasticSearchException;
+import org.elasticsearch.rest.RestStatus;
 
 /**
  */
-public class LoggingRunnable implements Runnable {
+public class EsRejectedExecutionException extends ElasticSearchException {
 
-    private final Runnable runnable;
+    public EsRejectedExecutionException(String message) {
+        super(message);
+    }
 
-    private final ESLogger logger;
+    public EsRejectedExecutionException() {
+        super(null);
+    }
 
-    public LoggingRunnable(ESLogger logger, Runnable runnable) {
-        this.runnable = runnable;
-        this.logger = logger;
+    public EsRejectedExecutionException(Throwable e) {
+        super(null, e);
     }
 
     @Override
-    public void run() {
-        try {
-            runnable.run();
-        } catch (Exception e) {
-            logger.warn("failed to execute [{}]", e, runnable.toString());
-        }
+    public RestStatus status() {
+        return RestStatus.SERVICE_UNAVAILABLE;
     }
 }

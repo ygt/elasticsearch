@@ -25,10 +25,12 @@ import com.ning.compress.lzf.LZFEncoder;
 import com.ning.compress.lzf.util.ChunkDecoderFactory;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
+import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.compress.*;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.logging.Loggers;
+import org.elasticsearch.common.settings.Settings;
 import org.jboss.netty.buffer.ChannelBuffer;
 
 import java.io.IOException;
@@ -51,6 +53,30 @@ public class LZFCompressor implements Compressor {
     @Override
     public String type() {
         return TYPE;
+    }
+
+    @Override
+    public void configure(Settings settings) {
+        String decoderType = settings.get("compress.lzf.decoder", null);
+        if (decoderType != null) {
+            if ("optimal".equalsIgnoreCase(decoderType)) {
+                this.decoder = ChunkDecoderFactory.optimalInstance();
+                Loggers.getLogger(LZFCompressor.class).debug("using [{}] decoder", this.decoder.getClass().getSimpleName());
+            } else if ("safe".equalsIgnoreCase(decoderType)) {
+                this.decoder = ChunkDecoderFactory.safeInstance();
+                Loggers.getLogger(LZFCompressor.class).debug("using [{}] decoder", this.decoder.getClass().getSimpleName());
+            } else {
+                Loggers.getLogger(LZFCompressor.class).warn("decoder type not recognized [{}], still using [{}]", decoderType, this.decoder.getClass().getSimpleName());
+            }
+        }
+    }
+
+    @Override
+    public boolean isCompressed(BytesReference bytes) {
+        return bytes.length() >= 3 &&
+                bytes.get(0) == LZFChunk.BYTE_Z &&
+                bytes.get(1) == LZFChunk.BYTE_V &&
+                (bytes.get(2) == LZFChunk.BLOCK_TYPE_COMPRESSED || bytes.get(2) == LZFChunk.BLOCK_TYPE_NON_COMPRESSED);
     }
 
     @Override

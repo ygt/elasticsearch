@@ -36,13 +36,15 @@ import static org.elasticsearch.common.settings.ImmutableSettings.settingsBuilde
 public class InternalSettingsPerparer {
 
     public static Tuple<Settings, Environment> prepareSettings(Settings pSettings, boolean loadConfigSettings) {
+        // ignore this prefixes when getting properties from es. and elasticsearch.
+        String[] ignorePrefixes = new String[]{"es.default.", "elasticsearch.default."};
         // just create enough settings to build the environment
         ImmutableSettings.Builder settingsBuilder = settingsBuilder()
                 .put(pSettings)
                 .putProperties("elasticsearch.default.", System.getProperties())
                 .putProperties("es.default.", System.getProperties())
-                .putProperties("elasticsearch.", System.getProperties())
-                .putProperties("es.", System.getProperties())
+                .putProperties("elasticsearch.", System.getProperties(), ignorePrefixes)
+                .putProperties("es.", System.getProperties(), ignorePrefixes)
                 .replacePropertyPlaceholders();
 
         Environment environment = new Environment(settingsBuilder.build());
@@ -52,7 +54,7 @@ public class InternalSettingsPerparer {
             // if its default, then load it, but also load form env
             if (System.getProperty("es.default.config") != null) {
                 loadFromEnv = true;
-                settingsBuilder.loadFromUrl(environment.resolveConfig(System.getProperty("es.config")));
+                settingsBuilder.loadFromUrl(environment.resolveConfig(System.getProperty("es.default.config")));
             }
             // if explicit, just load it and don't load from env
             if (System.getProperty("es.config") != null) {
@@ -85,8 +87,8 @@ public class InternalSettingsPerparer {
         }
 
         settingsBuilder.put(pSettings)
-                .putProperties("elasticsearch.", System.getProperties())
-                .putProperties("es.", System.getProperties())
+                .putProperties("elasticsearch.", System.getProperties(), ignorePrefixes)
+                .putProperties("es.", System.getProperties(), ignorePrefixes)
                 .replacePropertyPlaceholders();
 
         // generate the name

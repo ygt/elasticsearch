@@ -22,6 +22,8 @@ package org.elasticsearch.common.xcontent;
 import com.google.common.base.Charsets;
 import com.google.common.collect.Maps;
 import org.elasticsearch.ElasticSearchParseException;
+import org.elasticsearch.common.bytes.BytesArray;
+import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.compress.CompressedStreamInput;
 import org.elasticsearch.common.compress.Compressor;
@@ -37,7 +39,24 @@ import java.util.Map;
 /**
  *
  */
+@SuppressWarnings("unchecked")
 public class XContentHelper {
+
+    public static XContentParser createParser(BytesReference bytes) throws IOException {
+        if (bytes.hasArray()) {
+            return createParser(bytes.array(), bytes.arrayOffset(), bytes.length());
+        }
+        Compressor compressor = CompressorFactory.compressor(bytes);
+        if (compressor != null) {
+            CompressedStreamInput compressedInput = compressor.streamInput(bytes.streamInput());
+            XContentType contentType = XContentFactory.xContentType(compressedInput);
+            compressedInput.resetToBufferStart();
+            return XContentFactory.xContent(contentType).createParser(compressedInput);
+        } else {
+            return XContentFactory.xContent(bytes).createParser(bytes.streamInput());
+        }
+    }
+
 
     public static XContentParser createParser(byte[] data, int offset, int length) throws IOException {
         Compressor compressor = CompressorFactory.compressor(data, offset, length);
@@ -48,6 +67,33 @@ public class XContentHelper {
             return XContentFactory.xContent(contentType).createParser(compressedInput);
         } else {
             return XContentFactory.xContent(data, offset, length).createParser(data, offset, length);
+        }
+    }
+
+    public static Tuple<XContentType, Map<String, Object>> convertToMap(BytesReference bytes, boolean ordered) throws ElasticSearchParseException {
+        if (bytes.hasArray()) {
+            return convertToMap(bytes.array(), bytes.arrayOffset(), bytes.length(), ordered);
+        }
+        try {
+            XContentParser parser;
+            XContentType contentType;
+            Compressor compressor = CompressorFactory.compressor(bytes);
+            if (compressor != null) {
+                CompressedStreamInput compressedStreamInput = compressor.streamInput(bytes.streamInput());
+                contentType = XContentFactory.xContentType(compressedStreamInput);
+                compressedStreamInput.resetToBufferStart();
+                parser = XContentFactory.xContent(contentType).createParser(compressedStreamInput);
+            } else {
+                contentType = XContentFactory.xContentType(bytes);
+                parser = XContentFactory.xContent(contentType).createParser(bytes.streamInput());
+            }
+            if (ordered) {
+                return Tuple.tuple(contentType, parser.mapOrderedAndClose());
+            } else {
+                return Tuple.tuple(contentType, parser.mapAndClose());
+            }
+        } catch (IOException e) {
+            throw new ElasticSearchParseException("Failed to parse content to map", e);
         }
     }
 
@@ -79,6 +125,36 @@ public class XContentHelper {
         }
     }
 
+    public static String convertToJson(BytesReference bytes, boolean reformatJson) throws IOException {
+        return convertToJson(bytes, reformatJson, false);
+    }
+
+    public static String convertToJson(BytesReference bytes, boolean reformatJson, boolean prettyPrint) throws IOException {
+        if (bytes.hasArray()) {
+            return convertToJson(bytes.array(), bytes.arrayOffset(), bytes.length(), reformatJson, prettyPrint);
+        }
+        XContentType xContentType = XContentFactory.xContentType(bytes);
+        if (xContentType == XContentType.JSON && !reformatJson) {
+            BytesArray bytesArray = bytes.toBytesArray();
+            return new String(bytesArray.array(), bytesArray.arrayOffset(), bytesArray.length(), Charsets.UTF_8);
+        }
+        XContentParser parser = null;
+        try {
+            parser = XContentFactory.xContent(xContentType).createParser(bytes.streamInput());
+            parser.nextToken();
+            XContentBuilder builder = XContentFactory.jsonBuilder();
+            if (prettyPrint) {
+                builder.prettyPrint();
+            }
+            builder.copyCurrentStructure(parser);
+            return builder.string();
+        } finally {
+            if (parser != null) {
+                parser.close();
+            }
+        }
+    }
+
     public static String convertToJson(byte[] data, int offset, int length, boolean reformatJson) throws IOException {
         return convertToJson(data, offset, length, reformatJson, false);
     }
@@ -101,6 +177,27 @@ public class XContentHelper {
         } finally {
             if (parser != null) {
                 parser.close();
+            }
+        }
+    }
+
+    /**
+     * Updates the provided changes into the source. If the key exists in the changes, it overrides the one in source
+     * unless both are Maps, in which case it recuersively updated it.
+     */
+    public static void update(Map<String, Object> source, Map<String, Object> changes) {
+        for (Map.Entry<String, Object> changesEntry : changes.entrySet()) {
+            if (!source.containsKey(changesEntry.getKey())) {
+                // safe to copy, change does not exist in source
+                source.put(changesEntry.getKey(), changesEntry.getValue());
+            } else {
+                if (source.get(changesEntry.getKey()) instanceof Map && changesEntry.getValue() instanceof Map) {
+                    // recursive merge maps
+                    update((Map<String, Object>) source.get(changesEntry.getKey()), (Map<String, Object>) changesEntry.getValue());
+                } else {
+                    // update the field
+                    source.put(changesEntry.getKey(), changesEntry.getValue());
+                }
             }
         }
     }

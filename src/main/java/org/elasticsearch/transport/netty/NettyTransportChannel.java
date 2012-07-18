@@ -19,6 +19,7 @@
 
 package org.elasticsearch.transport.netty;
 
+import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.io.ThrowableObjectOutputStream;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
 import org.elasticsearch.common.io.stream.CachedStreamOutput;
@@ -75,7 +76,8 @@ public class NettyTransportChannel implements TransportChannel {
         }
         CachedStreamOutput.Entry cachedEntry = CachedStreamOutput.popEntry();
         TransportStreams.buildResponse(cachedEntry, requestId, message, options);
-        ChannelBuffer buffer = ChannelBuffers.wrappedBuffer(cachedEntry.bytes().underlyingBytes(), 0, cachedEntry.bytes().size());
+        BytesReference bytes = cachedEntry.bytes().bytes();
+        ChannelBuffer buffer = ChannelBuffers.wrappedBuffer(bytes.array(), bytes.arrayOffset(), bytes.length());
         ChannelFuture future = channel.write(buffer);
         future.addListener(new NettyTransport.CacheFutureListener(cachedEntry));
     }
@@ -85,21 +87,23 @@ public class NettyTransportChannel implements TransportChannel {
         CachedStreamOutput.Entry cachedEntry = CachedStreamOutput.popEntry();
         BytesStreamOutput stream;
         try {
-            stream = cachedEntry.cachedBytes();
+            stream = cachedEntry.bytes();
             writeResponseExceptionHeader(stream);
             RemoteTransportException tx = new RemoteTransportException(transport.nodeName(), transport.wrapAddress(channel.getLocalAddress()), action, error);
             ThrowableObjectOutputStream too = new ThrowableObjectOutputStream(stream);
             too.writeObject(tx);
             too.close();
         } catch (NotSerializableException e) {
-            stream = cachedEntry.cachedBytes();
+            cachedEntry.reset();
+            stream = cachedEntry.bytes();
             writeResponseExceptionHeader(stream);
             RemoteTransportException tx = new RemoteTransportException(transport.nodeName(), transport.wrapAddress(channel.getLocalAddress()), action, new NotSerializableTransportException(error));
             ThrowableObjectOutputStream too = new ThrowableObjectOutputStream(stream);
             too.writeObject(tx);
             too.close();
         }
-        ChannelBuffer buffer = ChannelBuffers.wrappedBuffer(stream.underlyingBytes(), 0, stream.size());
+        BytesReference bytes = stream.bytes();
+        ChannelBuffer buffer = ChannelBuffers.wrappedBuffer(bytes.array(), bytes.arrayOffset(), bytes.length());
         buffer.setInt(0, buffer.writerIndex() - 4); // update real size.
         ChannelFuture future = channel.write(buffer);
         future.addListener(new NettyTransport.CacheFutureListener(cachedEntry));

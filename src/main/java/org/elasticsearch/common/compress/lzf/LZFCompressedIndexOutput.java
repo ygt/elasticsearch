@@ -30,15 +30,16 @@ import java.io.IOException;
 
 /**
  */
-public class LZFCompressedIndexOutput extends CompressedIndexOutput {
+public class LZFCompressedIndexOutput extends CompressedIndexOutput<LZFCompressorContext> {
 
     private final BufferRecycler recycler;
     private final ChunkEncoder encoder;
 
     public LZFCompressedIndexOutput(IndexOutput out) throws IOException {
-        super(out);
+        super(out, LZFCompressorContext.INSTANCE);
         this.recycler = BufferRecycler.instance();
         this.uncompressed = this.recycler.allocOutputBuffer(LZFChunk.MAX_CHUNK_LEN);
+        this.uncompressedLength = LZFChunk.MAX_CHUNK_LEN;
         this.encoder = new ChunkEncoder(LZFChunk.MAX_CHUNK_LEN);
     }
 

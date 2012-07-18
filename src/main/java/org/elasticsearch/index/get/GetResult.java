@@ -21,8 +21,7 @@ package org.elasticsearch.index.get;
 
 import com.google.common.collect.ImmutableMap;
 import org.elasticsearch.ElasticSearchParseException;
-import org.elasticsearch.common.BytesHolder;
-import org.elasticsearch.common.Unicode;
+import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.compress.CompressorFactory;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -30,6 +29,7 @@ import org.elasticsearch.common.io.stream.Streamable;
 import org.elasticsearch.common.xcontent.ToXContent;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentBuilderString;
+import org.elasticsearch.common.xcontent.XContentHelper;
 import org.elasticsearch.rest.action.support.RestXContentBuilder;
 import org.elasticsearch.search.lookup.SourceLookup;
 
@@ -59,14 +59,14 @@ public class GetResult implements Streamable, Iterable<GetField>, ToXContent {
 
     private Map<String, Object> sourceAsMap;
 
-    private BytesHolder source;
+    private BytesReference source;
 
     private byte[] sourceAsBytes;
 
     GetResult() {
     }
 
-    public GetResult(String index, String type, String id, long version, boolean exists, BytesHolder source, Map<String, GetField> fields) {
+    public GetResult(String index, String type, String id, long version, boolean exists, BytesReference source, Map<String, GetField> fields) {
         this.index = index;
         this.type = type;
         this.id = id;
@@ -159,14 +159,14 @@ public class GetResult implements Streamable, Iterable<GetField>, ToXContent {
         if (sourceAsBytes != null) {
             return sourceAsBytes;
         }
-        this.sourceAsBytes = sourceRef().copyBytes();
+        this.sourceAsBytes = sourceRef().toBytes();
         return this.sourceAsBytes;
     }
 
     /**
      * Returns bytes reference, also un compress the source if needed.
      */
-    public BytesHolder sourceRef() {
+    public BytesReference sourceRef() {
         try {
             this.source = CompressorFactory.uncompressIfNeeded(this.source);
             return this.source;
@@ -178,7 +178,7 @@ public class GetResult implements Streamable, Iterable<GetField>, ToXContent {
     /**
      * Internal source representation, might be compressed....
      */
-    public BytesHolder internalSourceRef() {
+    public BytesReference internalSourceRef() {
         return source;
     }
 
@@ -196,8 +196,12 @@ public class GetResult implements Streamable, Iterable<GetField>, ToXContent {
         if (source == null) {
             return null;
         }
-        BytesHolder source = sourceRef();
-        return Unicode.fromBytes(source.bytes(), source.offset(), source.length());
+        BytesReference source = sourceRef();
+        try {
+            return XContentHelper.convertToJson(source, false);
+        } catch (IOException e) {
+            throw new ElasticSearchParseException("failed to convert source to a json string");
+        }
     }
 
     /**
@@ -212,7 +216,7 @@ public class GetResult implements Streamable, Iterable<GetField>, ToXContent {
             return sourceAsMap;
         }
 
-        sourceAsMap = SourceLookup.sourceAsMap(source.bytes(), source.offset(), source.length());
+        sourceAsMap = SourceLookup.sourceAsMap(source);
         return sourceAsMap;
     }
 
@@ -253,7 +257,7 @@ public class GetResult implements Streamable, Iterable<GetField>, ToXContent {
         builder.field(Fields.EXISTS, exists);
 
         if (source != null) {
-            RestXContentBuilder.restDocumentSource(source.bytes(), source.offset(), source.length(), builder, params);
+            RestXContentBuilder.restDocumentSource(source, builder, params);
         }
 
         if (fields != null && !fields.isEmpty()) {
@@ -341,7 +345,7 @@ public class GetResult implements Streamable, Iterable<GetField>, ToXContent {
         out.writeLong(version);
         out.writeBoolean(exists);
         if (exists) {
-            out.writeBytesHolder(source);
+            out.writeBytesReference(source);
             if (fields == null) {
                 out.writeVInt(0);
             } else {

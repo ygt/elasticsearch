@@ -1,9 +1,29 @@
+/*
+ * Licensed to ElasticSearch and Shay Banon under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership. ElasticSearch licenses this
+ * file to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 package org.elasticsearch.test.unit.common.compress;
 
 import jsr166y.ThreadLocalRandom;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.MapFieldSelector;
+import org.apache.lucene.index.CheckIndex;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
@@ -12,18 +32,18 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.RAMDirectory;
 import org.elasticsearch.common.RandomStringGenerator;
+import org.elasticsearch.common.compress.CompressedDirectory;
 import org.elasticsearch.common.compress.CompressedIndexInput;
 import org.elasticsearch.common.compress.CompressedIndexOutput;
 import org.elasticsearch.common.compress.Compressor;
-import org.elasticsearch.common.compress.CompressorFactory;
+import org.elasticsearch.common.compress.lzf.LZFCompressor;
+import org.elasticsearch.common.compress.snappy.xerial.XerialSnappy;
+import org.elasticsearch.common.compress.snappy.xerial.XerialSnappyCompressor;
 import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.common.unit.SizeValue;
-import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
 import java.io.EOFException;
-import java.io.IOException;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.equalTo;
@@ -33,15 +53,40 @@ import static org.hamcrest.Matchers.equalTo;
 @Test
 public class CompressIndexInputOutputTests {
 
-    private Compressor compressor;
-
-    @BeforeClass
-    public void buildCompressor() {
-        this.compressor = CompressorFactory.defaultCompressor();
+    @Test
+    public void testXerialSnappy() throws Exception {
+        if (XerialSnappy.available) {
+            testCompressor(new XerialSnappyCompressor());
+        }
     }
 
     @Test
-    public void empty() throws Exception {
+    public void testLZF() throws Exception {
+        testCompressor(new LZFCompressor());
+    }
+
+    @Test
+    public void testSideAffects() throws Exception {
+        if (XerialSnappy.available) {
+            testCompressor(new XerialSnappyCompressor());
+        }
+        testCompressor(new LZFCompressor());
+        if (XerialSnappy.available) {
+            testCompressor(new XerialSnappyCompressor());
+        }
+        testCompressor(new LZFCompressor());
+    }
+
+    private void testCompressor(Compressor compressor) throws Exception {
+        empty(compressor);
+        simple(compressor);
+        seek1Compressed(compressor);
+        seek1UnCompressed(compressor);
+        copyBytes(compressor);
+        lucene(compressor);
+    }
+
+    private void empty(Compressor compressor) throws Exception {
         Directory dir = new RAMDirectory();
         IndexOutput out = compressor.indexOutput(dir.createOutput("test"));
         out.close();
@@ -63,8 +108,7 @@ public class CompressIndexInputOutputTests {
         }
     }
 
-    @Test
-    public void simple() throws Exception {
+    private void simple(Compressor compressor) throws Exception {
         Directory dir = new RAMDirectory();
         IndexOutput out = compressor.indexOutput(dir.createOutput("test"));
         long pos1 = out.getFilePointer();
@@ -103,17 +147,15 @@ public class CompressIndexInputOutputTests {
         in.close();
     }
 
-    @Test
-    public void seek1Compressed() throws Exception {
-        seek1(true);
+    private void seek1Compressed(Compressor compressor) throws Exception {
+        seek1(true, compressor);
     }
 
-    @Test
-    public void seek1UnCompressed() throws Exception {
-        seek1(false);
+    private void seek1UnCompressed(Compressor compressor) throws Exception {
+        seek1(false, compressor);
     }
 
-    private void seek1(boolean compressed) throws Exception {
+    private void seek1(boolean compressed, Compressor compressor) throws Exception {
         Directory dir = new RAMDirectory();
         IndexOutput out = compressed ? compressor.indexOutput(dir.createOutput("test")) : dir.createOutput("test");
         long pos1 = out.getFilePointer();
@@ -127,6 +169,16 @@ public class CompressIndexInputOutputTests {
         long pos3 = out.getFilePointer();
         out.writeVInt(4);
         out.writeInt(4);
+
+        int size = 50;
+        long[] positions = new long[size];
+        String[] data = new String[size];
+        for (int i = 0; i < 50; i++) {
+            positions[i] = out.getFilePointer();
+            data[i] = RandomStringGenerator.random(12345);
+            out.writeString(data[i]);
+        }
+
         out.close();
 
         //IndexInput in = dir.openInput("test");
@@ -138,10 +190,15 @@ public class CompressIndexInputOutputTests {
         in.seek(in.getFilePointer() + numBytes);
         assertThat(in.readVInt(), equalTo(4));
         assertThat(in.readInt(), equalTo(4));
+
+        for (int i = 0; i < size; i++) {
+            in.seek(positions[i]);
+            assertThat(in.getFilePointer(), equalTo(positions[i]));
+            assertThat(in.readString(), equalTo(data[i]));
+        }
     }
 
-    @Test
-    public void copyBytes() throws Exception {
+    private void copyBytes(Compressor compressor) throws Exception {
         Directory dir = new RAMDirectory();
         IndexOutput out = compressor.indexOutput(dir.createOutput("test"));
         long pos1 = out.getFilePointer();
@@ -192,52 +249,8 @@ public class CompressIndexInputOutputTests {
         }
     }
 
-    @Test
-    public void lucene() throws Exception {
-        final AtomicBoolean compressed = new AtomicBoolean(true);
-        Directory dir = new RAMDirectory() {
-
-            @Override
-            public IndexOutput createOutput(String name) throws IOException {
-                if (compressed.get() && name.endsWith(".fdt")) {
-                    return compressor.indexOutput(super.createOutput(name));
-                }
-                return super.createOutput(name);
-            }
-
-            @Override
-            public IndexInput openInput(String name) throws IOException {
-                if (name.endsWith(".fdt")) {
-                    IndexInput in = super.openInput(name);
-                    Compressor compressor1 = CompressorFactory.compressor(in);
-                    if (compressor1 != null) {
-                        return compressor1.indexInput(in);
-                    } else {
-                        return in;
-                    }
-                }
-                return super.openInput(name);
-            }
-
-            @Override
-            public IndexInput openInput(String name, int bufferSize) throws IOException {
-                if (name.endsWith(".fdt")) {
-                    IndexInput in = super.openInput(name, bufferSize);
-                    // in case the override called openInput(String)
-                    if (in instanceof CompressedIndexInput) {
-                        return in;
-                    }
-                    Compressor compressor1 = CompressorFactory.compressor(in);
-                    if (compressor1 != null) {
-                        return compressor1.indexInput(in);
-                    } else {
-                        return in;
-                    }
-                }
-                return super.openInput(name, bufferSize);
-            }
-        };
-
+    private void lucene(Compressor compressor) throws Exception {
+        CompressedDirectory dir = new CompressedDirectory(new RAMDirectory(), compressor, false, "fdt");
         IndexWriter writer = new IndexWriter(dir, new IndexWriterConfig(Lucene.VERSION, Lucene.STANDARD_ANALYZER));
         writer.addDocument(createDoc(1, (int) SizeValue.parseSizeValue("100b").singles()));
         writer.addDocument(createDoc(2, (int) SizeValue.parseSizeValue("5k").singles()));
@@ -249,16 +262,20 @@ public class CompressIndexInputOutputTests {
         writer.forceMerge(1);
         writer.waitForMerges();
         verify(writer);
-        compressed.set(false);
+        dir.setCompress(false);
         writer.addDocument(createDoc(5, (int) SizeValue.parseSizeValue("2k").singles()));
         writer.addDocument(createDoc(6, (int) SizeValue.parseSizeValue("1k").singles()));
         verify(writer);
         writer.forceMerge(1);
         writer.waitForMerges();
         verify(writer);
+        writer.close();
     }
 
     private void verify(IndexWriter writer) throws Exception {
+        CheckIndex checkIndex = new CheckIndex(writer.getDirectory());
+        CheckIndex.Status status = checkIndex.checkIndex();
+        assertThat(status.clean, equalTo(true));
         IndexReader reader = IndexReader.open(writer, true);
         for (int i = 0; i < reader.maxDoc(); i++) {
             if (reader.isDeleted(i)) {

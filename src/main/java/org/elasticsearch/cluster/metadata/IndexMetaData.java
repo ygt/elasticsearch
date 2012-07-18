@@ -368,6 +368,10 @@ public class IndexMetaData {
         return result;
     }
 
+    public static Builder builder(String index) {
+        return new Builder(index);
+    }
+
     public static Builder newIndexMetaDataBuilder(String index) {
         return new Builder(index);
     }
@@ -408,6 +412,11 @@ public class IndexMetaData {
 
         public String index() {
             return index;
+        }
+
+        public Builder index(String name) {
+            this.index = index;
+            return this;
         }
 
         public Builder numberOfShards(int numberOfShards) {
