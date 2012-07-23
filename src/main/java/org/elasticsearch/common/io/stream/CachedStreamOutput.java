@@ -20,6 +20,7 @@
 package org.elasticsearch.common.io.stream;
 
 import jsr166y.LinkedTransferQueue;
+import org.elasticsearch.common.compress.Compressor;
 
 import java.io.IOException;
 import java.lang.ref.SoftReference;
@@ -40,51 +41,34 @@ public class CachedStreamOutput {
     public static class Entry {
         private final BytesStreamOutput bytes;
         private final HandlesStreamOutput handles;
-        private LZFStreamOutput lzf;
 
         Entry(BytesStreamOutput bytes, HandlesStreamOutput handles) {
             this.bytes = bytes;
             this.handles = handles;
         }
 
-        // lazily initialize LZF, so we won't allocate it if we don't do
-        // any compression
-        private LZFStreamOutput lzf() {
-            if (lzf == null) {
-                lzf = new LZFStreamOutput(bytes, true);
-            }
-            return lzf;
+        public void reset() {
+            bytes.reset();
+            handles.setOut(bytes);
+            handles.clear();
         }
 
-        /**
-         * Returns the underlying bytes without any resetting.
-         */
         public BytesStreamOutput bytes() {
             return bytes;
         }
 
-        /**
-         * Returns cached bytes that are also reset.
-         */
-        public BytesStreamOutput cachedBytes() {
-            bytes.reset();
-            return bytes;
-        }
-
-        public LZFStreamOutput cachedLZFBytes() throws IOException {
-            LZFStreamOutput lzf = lzf();
-            lzf.reset();
-            return lzf;
-        }
-
-        public HandlesStreamOutput cachedHandlesLzfBytes() throws IOException {
-            LZFStreamOutput lzf = lzf();
-            handles.reset(lzf);
+        public StreamOutput handles() throws IOException {
             return handles;
         }
 
-        public HandlesStreamOutput cachedHandlesBytes() throws IOException {
-            handles.reset(bytes);
+        public StreamOutput bytes(Compressor compressor) throws IOException {
+            return compressor.streamOutput(bytes);
+        }
+
+        public StreamOutput handles(Compressor compressor) throws IOException {
+            StreamOutput compressed = compressor.streamOutput(bytes);
+            handles.clear();
+            handles.setOut(compressed);
             return handles;
         }
     }
@@ -127,11 +111,13 @@ public class CachedStreamOutput {
             return newEntry();
         }
         counter.decrementAndGet();
+        entry.reset();
         return entry;
     }
 
     public static void pushEntry(Entry entry) {
-        if (entry.bytes().underlyingBytes().length > BYTES_LIMIT) {
+        entry.reset();
+        if (entry.bytes().bytes().length() > BYTES_LIMIT) {
             return;
         }
         Queue<Entry> ref = cache.get();

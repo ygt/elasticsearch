@@ -19,8 +19,9 @@
 
 package org.elasticsearch.common.io.stream;
 
-import org.elasticsearch.common.BytesHolder;
 import org.elasticsearch.common.Nullable;
+import org.elasticsearch.common.bytes.BytesReference;
+import org.elasticsearch.common.text.Text;
 import org.joda.time.ReadableInstant;
 
 import java.io.IOException;
@@ -68,18 +69,16 @@ public abstract class StreamOutput extends OutputStream {
      */
     public abstract void writeBytes(byte[] b, int offset, int length) throws IOException;
 
-    public void writeBytesHolder(byte[] bytes, int offset, int length) throws IOException {
-        writeVInt(length);
-        writeBytes(bytes, offset, length);
-    }
-
-    public void writeBytesHolder(@Nullable BytesHolder bytes) throws IOException {
+    /**
+     * Writes the bytes reference, including a length header.
+     */
+    public void writeBytesReference(@Nullable BytesReference bytes) throws IOException {
         if (bytes == null) {
             writeVInt(0);
-        } else {
-            writeVInt(bytes.length());
-            writeBytes(bytes.bytes(), bytes.offset(), bytes.length());
+            return;
         }
+        writeVInt(bytes.length());
+        bytes.writeTo(this);
     }
 
     public final void writeShort(short v) throws IOException {
@@ -131,6 +130,7 @@ public abstract class StreamOutput extends OutputStream {
         writeByte((byte) i);
     }
 
+    @Deprecated
     public void writeOptionalUTF(@Nullable String str) throws IOException {
         if (str == null) {
             writeBoolean(false);
@@ -140,10 +140,22 @@ public abstract class StreamOutput extends OutputStream {
         }
     }
 
-    /**
-     * Writes a string.
-     */
-    public void writeUTF(String str) throws IOException {
+    public void writeOptionalString(@Nullable String str) throws IOException {
+        if (str == null) {
+            writeBoolean(false);
+        } else {
+            writeBoolean(true);
+            writeString(str);
+        }
+    }
+
+    public void writeText(Text text) throws IOException {
+        // always write the bytes...
+        // TODO: TextBytesOptimization we could potentially optimize this, and write the bytes directly to the output stream converting to UTF8 in case its a string
+        writeBytesReference(text.bytes());
+    }
+
+    public void writeString(String str) throws IOException {
         int charCount = str.length();
         writeVInt(charCount);
         int c;
@@ -160,6 +172,16 @@ public abstract class StreamOutput extends OutputStream {
                 writeByte((byte) (0x80 | c >> 0 & 0x3F));
             }
         }
+    }
+
+    /**
+     * Writes a string.
+     *
+     * @deprecated use {@link #writeString(String)}
+     */
+    @Deprecated
+    public void writeUTF(String str) throws IOException {
+        writeString(str);
     }
 
     public void writeFloat(float v) throws IOException {
@@ -206,7 +228,7 @@ public abstract class StreamOutput extends OutputStream {
     public void writeStringArray(String[] array) throws IOException {
         writeVInt(array.length);
         for (String s : array) {
-            writeUTF(s);
+            writeString(s);
         }
     }
 
@@ -222,7 +244,7 @@ public abstract class StreamOutput extends OutputStream {
         Class type = value.getClass();
         if (type == String.class) {
             writeByte((byte) 0);
-            writeUTF((String) value);
+            writeString((String) value);
         } else if (type == Integer.class) {
             writeByte((byte) 1);
             writeInt((Integer) value);
@@ -277,6 +299,9 @@ public abstract class StreamOutput extends OutputStream {
         } else if (value instanceof ReadableInstant) {
             writeByte((byte) 13);
             writeLong(((ReadableInstant) value).getMillis());
+        } else if (value instanceof BytesReference) {
+            writeByte((byte) 14);
+            writeBytesReference((BytesReference) value);
         } else {
             throw new IOException("Can't write type [" + type + "]");
         }

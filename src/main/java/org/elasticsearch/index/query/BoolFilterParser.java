@@ -57,21 +57,27 @@ public class BoolFilterParser implements FilterParser {
         String filterName = null;
         String currentFieldName = null;
         XContentParser.Token token;
+
+        boolean hasAnyFilter = false;
+
         while ((token = parser.nextToken()) != XContentParser.Token.END_OBJECT) {
             if (token == XContentParser.Token.FIELD_NAME) {
                 currentFieldName = parser.currentName();
             } else if (token == XContentParser.Token.START_OBJECT) {
                 if ("must".equals(currentFieldName)) {
+                    hasAnyFilter = true;
                     Filter filter = parseContext.parseInnerFilter();
                     if (filter != null) {
                         boolFilter.add(new FilterClause(filter, BooleanClause.Occur.MUST));
                     }
                 } else if ("must_not".equals(currentFieldName) || "mustNot".equals(currentFieldName)) {
+                    hasAnyFilter = true;
                     Filter filter = parseContext.parseInnerFilter();
                     if (filter != null) {
                         boolFilter.add(new FilterClause(filter, BooleanClause.Occur.MUST_NOT));
                     }
                 } else if ("should".equals(currentFieldName)) {
+                    hasAnyFilter = true;
                     Filter filter = parseContext.parseInnerFilter();
                     if (filter != null) {
                         boolFilter.add(new FilterClause(filter, BooleanClause.Occur.SHOULD));
@@ -81,6 +87,7 @@ public class BoolFilterParser implements FilterParser {
                 }
             } else if (token == XContentParser.Token.START_ARRAY) {
                 if ("must".equals(currentFieldName)) {
+                    hasAnyFilter = true;
                     while ((token = parser.nextToken()) != XContentParser.Token.END_ARRAY) {
                         Filter filter = parseContext.parseInnerFilter();
                         if (filter != null) {
@@ -88,6 +95,7 @@ public class BoolFilterParser implements FilterParser {
                         }
                     }
                 } else if ("must_not".equals(currentFieldName) || "mustNot".equals(currentFieldName)) {
+                    hasAnyFilter = true;
                     while ((token = parser.nextToken()) != XContentParser.Token.END_ARRAY) {
                         Filter filter = parseContext.parseInnerFilter();
                         if (filter != null) {
@@ -95,6 +103,7 @@ public class BoolFilterParser implements FilterParser {
                         }
                     }
                 } else if ("should".equals(currentFieldName)) {
+                    hasAnyFilter = true;
                     while ((token = parser.nextToken()) != XContentParser.Token.END_ARRAY) {
                         Filter filter = parseContext.parseInnerFilter();
                         if (filter != null) {
@@ -117,7 +126,13 @@ public class BoolFilterParser implements FilterParser {
             }
         }
 
-        if (boolFilter.getMustFilters().isEmpty() && boolFilter.getNotFilters().isEmpty() && boolFilter.getShouldFilters().isEmpty()) {
+        if (!hasAnyFilter) {
+            throw new QueryParsingException(parseContext.index(), "[bool] filter has no inner should/must/must_not elements");
+        }
+
+        if ((boolFilter.getMustFilters() == null || boolFilter.getMustFilters().isEmpty())
+                && (boolFilter.getNotFilters() == null || boolFilter.getNotFilters().isEmpty())
+                && (boolFilter.getShouldFilters() == null || boolFilter.getShouldFilters().isEmpty())) {
             return null;
         }
 

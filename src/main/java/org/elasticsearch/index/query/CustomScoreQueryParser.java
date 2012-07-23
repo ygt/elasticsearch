@@ -27,6 +27,7 @@ import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.lucene.search.function.FunctionScoreQuery;
 import org.elasticsearch.common.lucene.search.function.ScoreFunction;
 import org.elasticsearch.common.xcontent.XContentParser;
+import org.elasticsearch.script.ExplainableSearchScript;
 import org.elasticsearch.script.SearchScript;
 
 import java.io.IOException;
@@ -141,9 +142,16 @@ public class CustomScoreQueryParser implements QueryParser {
 
         @Override
         public Explanation explainScore(int docId, Explanation subQueryExpl) {
-            float score = score(docId, subQueryExpl.getValue());
-            Explanation exp = new Explanation(score, "script score function: product of:");
-            exp.addDetail(subQueryExpl);
+            Explanation exp;
+            if (script instanceof ExplainableSearchScript) {
+                script.setNextDocId(docId);
+                script.setNextScore(subQueryExpl.getValue());
+                exp = ((ExplainableSearchScript) script).explain(subQueryExpl);
+            } else {
+                float score = score(docId, subQueryExpl.getValue());
+                exp = new Explanation(score, "script score function: composed of:");
+                exp.addDetail(subQueryExpl);
+            }
             return exp;
         }
 

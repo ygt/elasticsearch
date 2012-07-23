@@ -25,6 +25,7 @@ import org.elasticsearch.action.index.IndexRequest;
 import org.elasticsearch.action.support.BaseRequestBuilder;
 import org.elasticsearch.action.support.replication.ReplicationType;
 import org.elasticsearch.client.Client;
+import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentType;
@@ -184,6 +185,62 @@ public class UpdateRequestBuilder extends BaseRequestBuilder<UpdateRequest, Upda
     }
 
     /**
+     * Sets the doc to use for updates when a script is not specified.
+     */
+    public UpdateRequestBuilder setDoc(IndexRequest indexRequest) {
+        request.doc(indexRequest);
+        return this;
+    }
+
+    /**
+     * Sets the doc to use for updates when a script is not specified.
+     */
+    public UpdateRequestBuilder setDoc(XContentBuilder source) {
+        request.doc(source);
+        return this;
+    }
+
+    /**
+     * Sets the doc to use for updates when a script is not specified.
+     */
+    public UpdateRequestBuilder setDoc(Map source) {
+        request.doc(source);
+        return this;
+    }
+
+    /**
+     * Sets the doc to use for updates when a script is not specified.
+     */
+    public UpdateRequestBuilder setDoc(Map source, XContentType contentType) {
+        request.doc(source, contentType);
+        return this;
+    }
+
+    /**
+     * Sets the doc to use for updates when a script is not specified.
+     */
+    public UpdateRequestBuilder setDoc(String source) {
+        request.doc(source);
+        return this;
+    }
+
+    /**
+     * Sets the doc to use for updates when a script is not specified.
+     */
+    public UpdateRequestBuilder setDoc(byte[] source) {
+        request.doc(source);
+        return this;
+    }
+
+    /**
+     * Sets the doc to use for updates when a script is not specified.
+     */
+    public UpdateRequestBuilder setDoc(byte[] source, int offset, int length) {
+        request.doc(source, offset, length);
+        return this;
+    }
+
+    /**
      * Sets the index request to be used if the document does not exists. Otherwise, a {@link org.elasticsearch.index.engine.DocumentMissingException}
      * is thrown.
      */
@@ -252,6 +309,11 @@ public class UpdateRequestBuilder extends BaseRequestBuilder<UpdateRequest, Upda
 
     public UpdateRequestBuilder setSource(byte[] source, int offset, int length) throws Exception {
         request.source(source, offset, length);
+        return this;
+    }
+
+    public UpdateRequestBuilder setSource(BytesReference source) throws Exception {
+        request.source(source);
         return this;
     }
 

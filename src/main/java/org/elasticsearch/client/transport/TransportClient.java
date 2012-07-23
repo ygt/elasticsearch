@@ -50,6 +50,7 @@ import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.common.CacheRecycler;
 import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.component.LifecycleComponent;
+import org.elasticsearch.common.compress.CompressorFactory;
 import org.elasticsearch.common.inject.Injector;
 import org.elasticsearch.common.inject.ModulesBuilder;
 import org.elasticsearch.common.io.CachedStreams;
@@ -57,8 +58,8 @@ import org.elasticsearch.common.network.NetworkModule;
 import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.settings.SettingsModule;
-import org.elasticsearch.common.thread.ThreadLocals;
 import org.elasticsearch.common.transport.TransportAddress;
+import org.elasticsearch.common.util.concurrent.ThreadLocals;
 import org.elasticsearch.env.Environment;
 import org.elasticsearch.env.EnvironmentModule;
 import org.elasticsearch.monitor.MonitorService;
@@ -154,6 +155,8 @@ public class TransportClient extends AbstractClient {
 
         this.pluginsService = new PluginsService(tuple.v1(), tuple.v2());
         this.settings = pluginsService.updatedSettings();
+
+        CompressorFactory.configure(settings);
 
         ModulesBuilder modules = new ModulesBuilder();
         modules.add(new PluginsModule(settings, pluginsService));

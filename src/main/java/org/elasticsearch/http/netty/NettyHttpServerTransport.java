@@ -22,6 +22,7 @@ package org.elasticsearch.http.netty;
 import org.elasticsearch.ElasticSearchException;
 import org.elasticsearch.common.component.AbstractLifecycleComponent;
 import org.elasticsearch.common.inject.Inject;
+import org.elasticsearch.common.netty.NettyStaticSetup;
 import org.elasticsearch.common.netty.OpenChannelsHandler;
 import org.elasticsearch.common.network.NetworkService;
 import org.elasticsearch.common.network.NetworkUtils;
@@ -35,15 +36,12 @@ import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.http.*;
 import org.elasticsearch.http.HttpRequest;
 import org.elasticsearch.transport.BindTransportException;
-import org.elasticsearch.transport.netty.NettyInternalESLoggerFactory;
 import org.jboss.netty.bootstrap.ServerBootstrap;
 import org.jboss.netty.channel.*;
 import org.jboss.netty.channel.socket.nio.NioServerSocketChannelFactory;
 import org.jboss.netty.channel.socket.oio.OioServerSocketChannelFactory;
 import org.jboss.netty.handler.codec.http.*;
 import org.jboss.netty.handler.timeout.ReadTimeoutException;
-import org.jboss.netty.logging.InternalLogger;
-import org.jboss.netty.logging.InternalLoggerFactory;
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -60,12 +58,7 @@ import static org.elasticsearch.common.util.concurrent.EsExecutors.daemonThreadF
 public class NettyHttpServerTransport extends AbstractLifecycleComponent<HttpServerTransport> implements HttpServerTransport {
 
     static {
-        InternalLoggerFactory.setDefaultFactory(new NettyInternalESLoggerFactory() {
-            @Override
-            public InternalLogger newInstance(String name) {
-                return super.newInstance(name.replace("org.jboss.netty.", "netty.").replace("org.jboss.netty.", "netty."));
-            }
-        });
+        NettyStaticSetup.setup();
     }
 
     private final NetworkService networkService;
@@ -98,8 +91,10 @@ public class NettyHttpServerTransport extends AbstractLifecycleComponent<HttpSer
     private final Boolean reuseAddress;
 
     private final ByteSizeValue tcpSendBufferSize;
-
     private final ByteSizeValue tcpReceiveBufferSize;
+
+    final ByteSizeValue maxCumulationBufferCapacity;
+    final int maxCompositeBufferComponents;
 
     private volatile ServerBootstrap serverBootstrap;
 
@@ -119,9 +114,11 @@ public class NettyHttpServerTransport extends AbstractLifecycleComponent<HttpSer
         this.maxChunkSize = componentSettings.getAsBytesSize("max_chunk_size", settings.getAsBytesSize("http.max_chunk_size", new ByteSizeValue(8, ByteSizeUnit.KB)));
         this.maxHeaderSize = componentSettings.getAsBytesSize("max_header_size", settings.getAsBytesSize("http.max_header_size", new ByteSizeValue(8, ByteSizeUnit.KB)));
         this.maxInitialLineLength = componentSettings.getAsBytesSize("max_initial_line_length", settings.getAsBytesSize("http.max_initial_line_length", new ByteSizeValue(4, ByteSizeUnit.KB)));
-        // don't reset cookies by default, since I don't think we really need to, and parsing of cookies with netty is slow
-        // and requires a large stack allocation because of the use of regex
+        // don't reset cookies by default, since I don't think we really need to
+        // note, parsing cookies was fixed in netty 3.5.1 regarding stack allocation, but still, currently, we don't need cookies
         this.resetCookies = componentSettings.getAsBoolean("reset_cookies", settings.getAsBoolean("http.reset_cookies", false));
+        this.maxCumulationBufferCapacity = componentSettings.getAsBytesSize("max_cumulation_buffer_capacity", null);
+        this.maxCompositeBufferComponents = componentSettings.getAsInt("max_composite_buffer_components", -1);
         this.workerCount = componentSettings.getAsInt("worker_count", Runtime.getRuntime().availableProcessors() * 2);
         this.blockingServer = settings.getAsBoolean("http.blocking_server", settings.getAsBoolean(TCP_BLOCKING_SERVER, settings.getAsBoolean(TCP_BLOCKING, false)));
         this.port = componentSettings.get("port", settings.get("http.port", "9200-9300"));
@@ -175,10 +172,10 @@ public class NettyHttpServerTransport extends AbstractLifecycleComponent<HttpSer
         if (tcpKeepAlive != null) {
             serverBootstrap.setOption("child.keepAlive", tcpKeepAlive);
         }
-        if (tcpSendBufferSize != null) {
+        if (tcpSendBufferSize != null && tcpSendBufferSize.bytes() > 0) {
             serverBootstrap.setOption("child.sendBufferSize", tcpSendBufferSize.bytes());
         }
-        if (tcpReceiveBufferSize != null) {
+        if (tcpReceiveBufferSize != null && tcpReceiveBufferSize.bytes() > 0) {
             serverBootstrap.setOption("child.receiveBufferSize", tcpReceiveBufferSize.bytes());
         }
         if (reuseAddress != null) {
@@ -295,15 +292,30 @@ public class NettyHttpServerTransport extends AbstractLifecycleComponent<HttpSer
         public ChannelPipeline getPipeline() throws Exception {
             ChannelPipeline pipeline = Channels.pipeline();
             pipeline.addLast("openChannels", transport.serverOpenChannels);
-            pipeline.addLast("decoder", new HttpRequestDecoder(
+            HttpRequestDecoder requestDecoder = new HttpRequestDecoder(
                     (int) transport.maxInitialLineLength.bytes(),
                     (int) transport.maxHeaderSize.bytes(),
                     (int) transport.maxChunkSize.bytes()
-            ));
+            );
+            if (transport.maxCumulationBufferCapacity != null) {
+                if (transport.maxCumulationBufferCapacity.bytes() > Integer.MAX_VALUE) {
+                    requestDecoder.setMaxCumulationBufferCapacity(Integer.MAX_VALUE);
+                } else {
+                    requestDecoder.setMaxCumulationBufferCapacity((int) transport.maxCumulationBufferCapacity.bytes());
+                }
+            }
+            if (transport.maxCompositeBufferComponents != -1) {
+                requestDecoder.setMaxCumulationBufferComponents(transport.maxCompositeBufferComponents);
+            }
+            pipeline.addLast("decoder", requestDecoder);
             if (transport.compression) {
                 pipeline.addLast("decoder_compress", new HttpContentDecompressor());
             }
-            pipeline.addLast("aggregator", new HttpChunkAggregator((int) transport.maxContentLength.bytes()));
+            HttpChunkAggregator httpChunkAggregator = new HttpChunkAggregator((int) transport.maxContentLength.bytes());
+            if (transport.maxCompositeBufferComponents != -1) {
+                httpChunkAggregator.setMaxCumulationBufferComponents(transport.maxCompositeBufferComponents);
+            }
+            pipeline.addLast("aggregator", httpChunkAggregator);
             pipeline.addLast("encoder", new HttpResponseEncoder());
             if (transport.compression) {
                 pipeline.addLast("encoder_compress", new HttpContentCompressor(transport.compressionLevel));
